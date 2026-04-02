@@ -2,8 +2,6 @@
 
 O **Conselho da Massa** é uma plataforma digital inovadora projetada para dar voz ao torcedor do **Clube Atlético Mineiro**. Através desta aplicação, os atleticanos podem sugerir melhorias, votar em ideias da comunidade e debater o futuro do clube de forma organizada e transparente.
 
-![Galo Logo](https://upload.wikimedia.org/wikipedia/pt/e/e4/Atletico_mineiro_galo.png)
-
 ## 🚀 Funcionalidades
 
 - **Autenticação de Torcedores:** Sistema de login e registro para garantir que as sugestões venham de membros reais da Massa.
