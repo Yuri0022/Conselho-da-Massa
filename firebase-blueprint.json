@@ -1,0 +1,63 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user profile in the system.",
+      "type": "object",
+      "properties": {
+        "fullName": { "type": "string", "description": "Full name of the user." },
+        "nickname": { "type": "string", "description": "User's nickname for display." },
+        "email": { "type": "string", "format": "email", "description": "User's email address." },
+        "login": { "type": "string", "description": "User's login username." },
+        "role": { "type": "string", "enum": ["admin", "user"], "description": "User's role in the system." }
+      },
+      "required": ["fullName", "nickname", "login"]
+    },
+    "Idea": {
+      "title": "Idea",
+      "description": "A suggestion submitted by a torcedor.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Title of the suggestion." },
+        "description": { "type": "string", "description": "Detailed description of the idea." },
+        "authorUid": { "type": "string", "description": "UID of the user who created the idea." },
+        "authorNickname": { "type": "string", "description": "Nickname of the author at the time of creation." },
+        "likes": { "type": "integer", "description": "Number of likes." },
+        "dislikes": { "type": "integer", "description": "Number of dislikes." },
+        "category": { "type": "string", "enum": ["Futebol", "Marketing", "Infraestrutura", "Sócio-Torcedor", "Outros"], "description": "Category of the idea." },
+        "date": { "type": "string", "format": "date", "description": "Creation date (YYYY-MM-DD)." }
+      },
+      "required": ["title", "description", "authorUid", "authorNickname", "likes", "dislikes", "category", "date"]
+    },
+    "Vote": {
+      "title": "Vote",
+      "description": "A vote (like/dislike) on an idea.",
+      "type": "object",
+      "properties": {
+        "ideaId": { "type": "string", "description": "ID of the idea being voted on." },
+        "userId": { "type": "string", "description": "UID of the user who voted." },
+        "type": { "type": "string", "enum": ["like", "dislike"], "description": "Type of vote." }
+      },
+      "required": ["ideaId", "userId", "type"]
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "A comment on an idea.",
+      "type": "object",
+      "properties": {
+        "ideaId": { "type": "string", "description": "ID of the idea the comment belongs to." },
+        "authorUid": { "type": "string", "description": "UID of the commenter." },
+        "authorNickname": { "type": "string", "description": "Nickname of the commenter." },
+        "text": { "type": "string", "description": "Content of the comment." },
+        "date": { "type": "string", "format": "date", "description": "Creation date (YYYY-MM-DD)." }
+      },
+      "required": ["ideaId", "authorUid", "authorNickname", "text", "date"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": { "schema": "User", "description": "User profiles." },
+    "/ideas/{ideaId}": { "schema": "Idea", "description": "Suggestions submitted to the council." },
+    "/votes/{voteId}": { "schema": "Vote", "description": "Votes on ideas (voteId is usually userId_ideaId)." },
+    "/ideas/{ideaId}/comments/{commentId}": { "schema": "Comment", "description": "Comments on a specific idea." }
+  }
+}

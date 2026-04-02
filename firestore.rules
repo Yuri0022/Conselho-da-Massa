@@ -1,0 +1,151 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - fullName: string (required)
+    //   - nickname: string (required)
+    //   - email: string (required)
+    //   - role: string (required, enum: ['user', 'admin'])
+    //
+    // Collection: ideas
+    // Document ID: {ideaId}
+    // Fields:
+    //   - title: string (required)
+    //   - description: string (required)
+    //   - authorUid: string (required)
+    //   - authorNickname: string (required)
+    //   - likes: number (required)
+    //   - dislikes: number (required)
+    //   - category: string (required, enum: ['Futebol', 'Marketing', 'Infraestrutura', 'Sócio-Torcedor', 'Outros'])
+    //   - date: string (required, YYYY-MM-DD)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: votes
+    // Document ID: {userId}_{ideaId}
+    // Fields:
+    //   - userId: string (required)
+    //   - ideaId: string (required)
+    //   - type: string (required, enum: ['like', 'dislike'])
+    //
+    // Collection: ideas/{ideaId}/comments
+    // Document ID: {commentId}
+    // Fields:
+    //   - authorUid: string (required)
+    //   - authorNickname: string (required)
+    //   - text: string (required)
+    //   - date: string (required, YYYY-MM-DD)
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "yuri.pereira0029@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['fullName', 'nickname', 'email', 'role']) &&
+             data.fullName is string && data.fullName.size() > 0 && data.fullName.size() < 100 &&
+             data.nickname is string && data.nickname.size() > 0 && data.nickname.size() < 50 &&
+             data.email is string && isValidEmail(data.email) &&
+             data.role in ['user', 'admin'];
+    }
+
+    function isValidIdea(data) {
+      return hasOnlyAllowedFields(['title', 'description', 'authorUid', 'authorNickname', 'likes', 'dislikes', 'category', 'date', 'createdAt']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.description is string && data.description.size() > 0 && data.description.size() < 2000 &&
+             data.authorUid is string && data.authorNickname is string &&
+             data.likes is number && data.dislikes is number &&
+             data.category in ['Futebol', 'Marketing', 'Infraestrutura', 'Sócio-Torcedor', 'Outros'] &&
+             data.date is string && data.createdAt is timestamp;
+    }
+
+    function isValidVote(data) {
+      return hasOnlyAllowedFields(['userId', 'ideaId', 'type']) &&
+             data.userId is string && data.ideaId is string &&
+             data.type in ['like', 'dislike'];
+    }
+
+    function isValidComment(data) {
+      return hasOnlyAllowedFields(['authorUid', 'authorNickname', 'text', 'date', 'createdAt']) &&
+             data.authorUid is string && data.authorNickname is string &&
+             data.text is string && data.text.size() > 0 && data.text.size() < 1000 &&
+             data.date is string && data.createdAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == 'user';
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == resource.data.role;
+    }
+
+    match /ideas/{ideaId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidIdea(request.resource.data) && request.resource.data.authorUid == request.auth.uid;
+      allow update: if isAuthenticated() && 
+        (
+          isAdmin() ||
+          (isOwner(resource.data.authorUid) && isValidIdea(request.resource.data)) ||
+          (
+            // Allow counter updates via transaction
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'dislikes']) &&
+            request.resource.data.likes is number &&
+            request.resource.data.dislikes is number
+          )
+        );
+      
+      match /comments/{commentId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidComment(request.resource.data) && request.resource.data.authorUid == request.auth.uid;
+      }
+    }
+
+    match /votes/{voteId} {
+      allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid);
+      allow create: if isAuthenticated() && isValidVote(request.resource.data) && request.resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && isValidVote(request.resource.data) && request.resource.data.userId == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+  }
+}

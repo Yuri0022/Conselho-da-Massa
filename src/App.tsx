@@ -24,15 +24,42 @@ import {
   User as UserIcon,
   Mail,
   Lock,
-  AtSign
+  AtSign,
+  Edit,
+  X
 } from 'lucide-react';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut, 
+  onAuthStateChanged,
+  updateProfile,
+  GoogleAuthProvider,
+  signInWithPopup
+} from 'firebase/auth';
+import { 
+  collection, 
+  addDoc, 
+  updateDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  setDoc, 
+  getDoc,
+  deleteDoc,
+  serverTimestamp,
+  increment,
+  runTransaction,
+  where
+} from 'firebase/firestore';
+import { auth, db, handleFirestoreError, OperationType } from './firebase';
 
 interface User {
+  uid: string;
   fullName: string;
   nickname: string;
   email: string;
-  login: string;
-  password?: string;
 }
 
 interface Comment {
@@ -46,7 +73,8 @@ interface Idea {
   id: string;
   title: string;
   description: string;
-  author: string;
+  authorUid: string;
+  authorNickname: string;
   likes: number;
   dislikes: number;
   comments: Comment[];
@@ -62,20 +90,20 @@ const MOCK_IDEAS: Idea[] = [
     id: '1',
     title: 'Melhoria na Acústica da Arena MRV',
     description: 'Sugiro a instalação de painéis refletores no teto para que o som da Massa seja direcionado ao campo, aumentando a pressão sonora sobre o adversário.',
-    author: 'Atleticano_BH',
+    authorUid: 'mock-1',
+    authorNickname: 'Atleticano_BH',
     likes: 2450,
     dislikes: 120,
     category: 'Infraestrutura',
     date: '2024-03-25',
-    comments: [
-      { id: 'c1', author: 'GaloDoido', text: 'Excelente ideia! A Arena precisa ser um caldeirão.', date: '2024-03-26' }
-    ]
+    comments: []
   },
   {
     id: '2',
     title: 'Galo na Veia: Categoria Popular',
     description: 'Criação de um plano de sócio-torcedor com valor reduzido para torcedores de baixa renda, com acesso garantido a setores específicos da Arena.',
-    author: 'MassaForte',
+    authorUid: 'mock-2',
+    authorNickname: 'MassaForte',
     likes: 3100,
     dislikes: 45,
     category: 'Sócio-Torcedor',
@@ -86,7 +114,8 @@ const MOCK_IDEAS: Idea[] = [
     id: '3',
     title: 'Integração Base-Profissional',
     description: 'Implementar um sistema de intercâmbio onde jogadores do Sub-20 treinam semanalmente com o elenco principal para acelerar a transição.',
-    author: 'Conselheiro_Galo',
+    authorUid: 'mock-3',
+    authorNickname: 'Conselheiro_Galo',
     likes: 1200,
     dislikes: 80,
     category: 'Futebol',
@@ -97,7 +126,8 @@ const MOCK_IDEAS: Idea[] = [
     id: '4',
     title: 'Museu Interativo na Cidade do Galo',
     description: 'Transformar parte do CT em um espaço visitável para sócios, com realidade virtual revivendo a conquista da Libertadores de 2013.',
-    author: 'HistóriaAlvinegra',
+    authorUid: 'mock-4',
+    authorNickname: 'HistóriaAlvinegra',
     likes: 850,
     dislikes: 15,
     category: 'Marketing',
@@ -107,7 +137,7 @@ const MOCK_IDEAS: Idea[] = [
 ];
 
 export default function App() {
-  const [ideas, setIdeas] = useState<Idea[]>(MOCK_IDEAS);
+  const [ideas, setIdeas] = useState<Idea[]>([]);
   const [newIdeaTitle, setNewIdeaTitle] = useState('');
   const [newIdeaDesc, setNewIdeaDesc] = useState('');
   const [newIdeaCategory, setNewIdeaCategory] = useState<Category>('Futebol');
@@ -115,6 +145,13 @@ export default function App() {
   const [showSuccess, setShowSuccess] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeCategory, setActiveCategory] = useState<Category | 'Todas'>('Todas');
+  const [isLoading, setIsLoading] = useState(true);
+  const [showOnlyMyIdeas, setShowOnlyMyIdeas] = useState(false);
+  
+  // Edit State
+  const [editingIdea, setEditingIdea] = useState<Idea | null>(null);
+  const [editForm, setEditForm] = useState({ title: '', description: '', category: 'Futebol' as Category });
+  const [isEditing, setIsEditing] = useState(false);
   
   // Auth State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -127,124 +164,309 @@ export default function App() {
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   
   // Form States
-  const [loginForm, setLoginForm] = useState({ login: '', password: '' });
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [isRegistering, setIsRegistering] = useState(false);
   const [registerForm, setRegisterForm] = useState({
     fullName: '',
     nickname: '',
     email: '',
-    login: '',
-    password: ''
+    password: '',
+    confirmPassword: ''
   });
 
+  const passwordCriteria = {
+    length: (registerForm.password?.length || 0) >= 8,
+    uppercase: /[A-Z]/.test(registerForm.password || ''),
+    lowercase: /[a-z]/.test(registerForm.password || ''),
+    number: /[0-9]/.test(registerForm.password || ''),
+    special: /[!@#$%^&*(),.?":{}|<>]/.test(registerForm.password || ''),
+    match: registerForm.password === registerForm.confirmPassword && (registerForm.password?.length || 0) > 0
+  };
+
   useEffect(() => {
-    const savedUser = localStorage.getItem('galo_user');
-    if (savedUser) {
-      setCurrentUser(JSON.parse(savedUser));
-    }
+    const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+          if (userDoc.exists()) {
+            const userData = userDoc.data();
+            setCurrentUser({
+              uid: firebaseUser.uid,
+              fullName: userData.fullName,
+              nickname: userData.nickname,
+              email: firebaseUser.email || '',
+            });
+          }
+        } catch (error) {
+          console.error("Error fetching user data:", error);
+        }
+      } else {
+        setCurrentUser(null);
+      }
+      setIsLoading(false);
+    });
+
+    return () => unsubscribeAuth();
   }, []);
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    const users = JSON.parse(localStorage.getItem('galo_users') || '[]');
-    const user = users.find((u: any) => u.login === loginForm.login && u.password === loginForm.password);
-    
-    if (user) {
-      const { password, ...userWithoutPassword } = user;
-      setCurrentUser(userWithoutPassword);
-      localStorage.setItem('galo_user', JSON.stringify(userWithoutPassword));
-      setAuthError('');
-    } else {
-      setAuthError('Login ou senha incorretos.');
+  useEffect(() => {
+    const q = query(collection(db, 'ideas'), orderBy('date', 'desc'));
+    const unsubscribeIdeas = onSnapshot(q, (snapshot) => {
+      const ideasData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        comments: [], // Initialize comments array
+        ...doc.data()
+      })) as Idea[];
+      setIdeas(ideasData);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'ideas');
+    });
+
+    return () => unsubscribeIdeas();
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setUserVotes({});
+      return;
+    }
+
+    const q = query(collection(db, 'votes'), where('userId', '==', currentUser.uid));
+    const unsubscribeVotes = onSnapshot(q, (snapshot) => {
+      const votes: Record<string, 'like' | 'dislike' | null> = {};
+      snapshot.docs.forEach(doc => {
+        const data = doc.data();
+        votes[data.ideaId] = data.type;
+      });
+      setUserVotes(votes);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'votes');
+    });
+
+    return () => unsubscribeVotes();
+  }, [currentUser]);
+
+  useEffect(() => {
+    const unsubscribes: (() => void)[] = [];
+
+    expandedIdeas.forEach(ideaId => {
+      const q = query(collection(db, 'ideas', ideaId, 'comments'), orderBy('createdAt', 'asc'));
+      const unsub = onSnapshot(q, (snapshot) => {
+        const commentsData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as Comment[];
+        
+        setIdeas(prev => prev.map(idea => 
+          idea.id === ideaId ? { ...idea, comments: commentsData } : idea
+        ));
+      }, (error) => {
+        handleFirestoreError(error, OperationType.LIST, `ideas/${ideaId}/comments`);
+      });
+      unsubscribes.push(unsub);
+    });
+
+    return () => unsubscribes.forEach(unsub => unsub());
+  }, [expandedIdeas]);
+
+  const handleGoogleSignIn = async () => {
+    setAuthError('');
+    const provider = new GoogleAuthProvider();
+    try {
+      const result = await signInWithPopup(auth, provider);
+      const user = result.user;
+
+      // Check if user already exists in Firestore
+      const userDoc = await getDoc(doc(db, 'users', user.uid));
+      if (!userDoc.exists()) {
+        // Create profile for new Google user
+        await setDoc(doc(db, 'users', user.uid), {
+          fullName: user.displayName || 'Torcedor do Galo',
+          nickname: user.displayName?.split(' ')[0].toLowerCase() || 'galo_fan',
+          email: user.email || '',
+          role: 'user'
+        });
+        
+        setCurrentUser({
+          uid: user.uid,
+          fullName: user.displayName || 'Torcedor do Galo',
+          nickname: user.displayName?.split(' ')[0].toLowerCase() || 'galo_fan',
+          email: user.email || ''
+        });
+      }
+    } catch (error: any) {
+      console.error("Google Sign-In error:", error);
+      if (error.code !== 'auth/popup-closed-by-user') {
+        setAuthError('Erro ao entrar com Google. Tente novamente.');
+      }
     }
   };
 
-  const handleRegister = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!registerForm.fullName || !registerForm.nickname || !registerForm.login || !registerForm.password) {
+    setAuthError('');
+    try {
+      await signInWithEmailAndPassword(auth, loginForm.email, loginForm.password);
+    } catch (error: any) {
+      setAuthError('E-mail ou senha incorretos.');
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    
+    if (!registerForm.fullName || !registerForm.nickname || !registerForm.email || !registerForm.password || !registerForm.confirmPassword) {
       setAuthError('Por favor, preencha todos os campos obrigatórios.');
       return;
     }
 
-    const users = JSON.parse(localStorage.getItem('galo_users') || '[]');
-    if (users.some((u: any) => u.login === registerForm.login)) {
-      setAuthError('Este login já está em uso.');
+    const allCriteriaMet = Object.values(passwordCriteria).every(Boolean);
+    if (!allCriteriaMet) {
+      setAuthError('A senha não atende a todos os critérios de segurança.');
       return;
     }
 
-    const newUser = { ...registerForm };
-    users.push(newUser);
-    localStorage.setItem('galo_users', JSON.stringify(users));
-    
-    const { password, ...userWithoutPassword } = newUser;
-    setCurrentUser(userWithoutPassword);
-    localStorage.setItem('galo_user', JSON.stringify(userWithoutPassword));
-    setAuthError('');
+    setIsRegistering(true);
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, registerForm.email, registerForm.password);
+      const user = userCredential.user;
+
+      try {
+        await setDoc(doc(db, 'users', user.uid), {
+          fullName: registerForm.fullName,
+          nickname: registerForm.nickname,
+          email: registerForm.email,
+          role: 'user'
+        });
+      } catch (firestoreError: any) {
+        console.error("Firestore error during registration:", firestoreError);
+        // If firestore fails, we still have the user in Auth, but the profile is missing.
+        // We should probably delete the user or handle it.
+        // For now, let's just log it and show a specific error.
+        setAuthError('Conta criada, mas houve um erro ao salvar seu perfil. Por favor, contate o suporte.');
+        setIsRegistering(false);
+        return;
+      }
+
+      setCurrentUser({
+        uid: user.uid,
+        fullName: registerForm.fullName,
+        nickname: registerForm.nickname,
+        email: registerForm.email
+      });
+    } catch (error: any) {
+      console.error("Registration error:", error);
+      if (error.code === 'auth/email-already-in-use') {
+        setAuthError('Este e-mail já está em uso.');
+      } else if (error.code === 'auth/invalid-email') {
+        setAuthError('E-mail inválido.');
+      } else if (error.code === 'auth/weak-password') {
+        setAuthError('A senha é muito fraca.');
+      } else {
+        setAuthError(`Erro ao criar conta: ${error.message}`);
+      }
+    } finally {
+      setIsRegistering(false);
+    }
   };
 
-  const handleLogout = () => {
-    setCurrentUser(null);
-    localStorage.removeItem('galo_user');
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setCurrentUser(null);
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
   };
 
   // Sort ideas by net score (likes - dislikes)
   const sortedIdeas = [...ideas].sort((a, b) => (b.likes - b.dislikes) - (a.likes - a.dislikes));
 
-  const handleLike = (id: string) => {
+  const handleLike = async (id: string) => {
+    if (!currentUser) return;
     const currentVote = userVotes[id];
-    
-    setIdeas(prev => prev.map(idea => {
-      if (idea.id === id) {
-        let newLikes = idea.likes;
-        let newDislikes = idea.dislikes;
-        
+    const voteId = `${currentUser.uid}_${id}`;
+    const voteRef = doc(db, 'votes', voteId);
+    const ideaRef = doc(db, 'ideas', id);
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const ideaDoc = await transaction.get(ideaRef);
+        if (!ideaDoc.exists()) return;
+
         if (currentVote === 'like') {
-          // Toggle off
-          newLikes -= 1;
-          setUserVotes(v => ({ ...v, [id]: null }));
+          transaction.update(ideaRef, { likes: increment(-1) });
+          transaction.delete(voteRef);
         } else if (currentVote === 'dislike') {
-          // Switch from dislike to like
-          newDislikes -= 1;
-          newLikes += 1;
-          setUserVotes(v => ({ ...v, [id]: 'like' }));
+          transaction.update(ideaRef, { likes: increment(1), dislikes: increment(-1) });
+          transaction.set(voteRef, { userId: currentUser.uid, ideaId: id, type: 'like' });
         } else {
-          // New like
-          newLikes += 1;
-          setUserVotes(v => ({ ...v, [id]: 'like' }));
+          transaction.update(ideaRef, { likes: increment(1) });
+          transaction.set(voteRef, { userId: currentUser.uid, ideaId: id, type: 'like' });
         }
-        
-        return { ...idea, likes: newLikes, dislikes: newDislikes };
-      }
-      return idea;
-    }));
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `ideas/${id}`);
+    }
   };
 
-  const handleDislike = (id: string) => {
+  const handleDislike = async (id: string) => {
+    if (!currentUser) return;
     const currentVote = userVotes[id];
-    
-    setIdeas(prev => prev.map(idea => {
-      if (idea.id === id) {
-        let newLikes = idea.likes;
-        let newDislikes = idea.dislikes;
-        
+    const voteId = `${currentUser.uid}_${id}`;
+    const voteRef = doc(db, 'votes', voteId);
+    const ideaRef = doc(db, 'ideas', id);
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const ideaDoc = await transaction.get(ideaRef);
+        if (!ideaDoc.exists()) return;
+
         if (currentVote === 'dislike') {
-          // Toggle off
-          newDislikes -= 1;
-          setUserVotes(v => ({ ...v, [id]: null }));
+          transaction.update(ideaRef, { dislikes: increment(-1) });
+          transaction.delete(voteRef);
         } else if (currentVote === 'like') {
-          // Switch from like to dislike
-          newLikes -= 1;
-          newDislikes += 1;
-          setUserVotes(v => ({ ...v, [id]: 'dislike' }));
+          transaction.update(ideaRef, { dislikes: increment(1), likes: increment(-1) });
+          transaction.set(voteRef, { userId: currentUser.uid, ideaId: id, type: 'dislike' });
         } else {
-          // New dislike
-          newDislikes += 1;
-          setUserVotes(v => ({ ...v, [id]: 'dislike' }));
+          transaction.update(ideaRef, { dislikes: increment(1) });
+          transaction.set(voteRef, { userId: currentUser.uid, ideaId: id, type: 'dislike' });
         }
-        
-        return { ...idea, likes: newLikes, dislikes: newDislikes };
-      }
-      return idea;
-    }));
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `ideas/${id}`);
+    }
+  };
+
+  const handleEditIdea = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingIdea || !currentUser) return;
+    
+    setIsEditing(true);
+    try {
+      const ideaRef = doc(db, 'ideas', editingIdea.id);
+      await updateDoc(ideaRef, {
+        title: editForm.title,
+        description: editForm.description,
+        category: editForm.category,
+        updatedAt: serverTimestamp()
+      });
+      setEditingIdea(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `ideas/${editingIdea.id}`);
+    } finally {
+      setIsEditing(false);
+    }
+  };
+
+  const startEditing = (idea: Idea) => {
+    setEditingIdea(idea);
+    setEditForm({
+      title: idea.title,
+      description: idea.description,
+      category: idea.category
+    });
   };
 
   const toggleComments = (id: string) => {
@@ -256,54 +478,68 @@ export default function App() {
     });
   };
 
-  const handleAddComment = (ideaId: string) => {
+  const handleAddComment = async (ideaId: string) => {
     const text = commentInputs[ideaId];
     if (!text || !currentUser) return;
 
-    const newComment: Comment = {
-      id: Date.now().toString(),
-      author: currentUser.nickname,
-      text: text,
-      date: new Date().toISOString().split('T')[0]
-    };
-
-    setIdeas(prev => prev.map(idea => 
-      idea.id === ideaId ? { ...idea, comments: [...idea.comments, newComment] } : idea
-    ));
-    
-    setCommentInputs(prev => ({ ...prev, [ideaId]: '' }));
+    try {
+      const commentRef = collection(db, 'ideas', ideaId, 'comments');
+      await addDoc(commentRef, {
+        authorUid: currentUser.uid,
+        authorNickname: currentUser.nickname,
+        text: text,
+        date: new Date().toISOString().split('T')[0],
+        createdAt: serverTimestamp()
+      });
+      
+      setCommentInputs(prev => ({ ...prev, [ideaId]: '' }));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `ideas/${ideaId}/comments`);
+    }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newIdeaTitle || !newIdeaDesc || !currentUser) return;
 
     setIsProcessing(true);
     
     // Simulate AI processing/validation
-    setTimeout(() => {
-      const newIdea: Idea = {
-        id: Date.now().toString(),
-        title: newIdeaTitle,
-        description: newIdeaDesc,
-        author: currentUser.nickname,
-        likes: 1,
-        dislikes: 0,
-        category: newIdeaCategory,
-        date: new Date().toISOString().split('T')[0],
-        comments: []
-      };
-      
-      setIdeas(prev => [newIdea, ...prev]);
-      setIsProcessing(false);
-      setShowSuccess(true);
-      setNewIdeaTitle('');
-      setNewIdeaDesc('');
-      setNewIdeaCategory('Futebol');
-      
-      setTimeout(() => setShowSuccess(false), 3000);
+    setTimeout(async () => {
+      try {
+        await addDoc(collection(db, 'ideas'), {
+          title: newIdeaTitle,
+          description: newIdeaDesc,
+          authorUid: currentUser.uid,
+          authorNickname: currentUser.nickname,
+          likes: 1,
+          dislikes: 0,
+          category: newIdeaCategory,
+          date: new Date().toISOString().split('T')[0],
+          createdAt: serverTimestamp()
+        });
+
+        setIsProcessing(false);
+        setShowSuccess(true);
+        setNewIdeaTitle('');
+        setNewIdeaDesc('');
+        setNewIdeaCategory('Futebol');
+        
+        setTimeout(() => setShowSuccess(false), 3000);
+      } catch (error) {
+        setIsProcessing(false);
+        handleFirestoreError(error, OperationType.CREATE, 'ideas');
+      }
     }, 3000);
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <Loader2 className="w-12 h-12 text-yellow-400 animate-spin" />
+      </div>
+    );
+  }
 
   if (!currentUser) {
     return (
@@ -353,10 +589,10 @@ export default function App() {
               <div className="relative">
                 <AtSign className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
                 <input 
-                  type="text" 
-                  placeholder="Login" 
-                  value={loginForm.login}
-                  onChange={(e) => setLoginForm({...loginForm, login: e.target.value})}
+                  type="email" 
+                  placeholder="E-mail" 
+                  value={loginForm.email}
+                  onChange={(e) => setLoginForm({...loginForm, email: e.target.value})}
                   className="w-full bg-black border border-zinc-800 rounded-xl py-3 pl-12 pr-4 focus:outline-none focus:border-yellow-400 transition-all"
                   required
                 />
@@ -375,6 +611,24 @@ export default function App() {
               <button type="submit" className="w-full bg-yellow-400 text-black font-black py-4 rounded-xl hover:bg-yellow-300 transition-all uppercase tracking-tighter flex items-center justify-center gap-2">
                 <LogIn className="w-5 h-5" />
                 Entrar no Portal
+              </button>
+
+              <div className="relative py-4">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-zinc-800"></div>
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-zinc-900 px-2 text-zinc-500 font-bold">Ou continue com</span>
+                </div>
+              </div>
+
+              <button 
+                type="button"
+                onClick={handleGoogleSignIn}
+                className="w-full bg-white text-black font-black py-4 rounded-xl hover:bg-zinc-200 transition-all uppercase tracking-tighter flex items-center justify-center gap-2"
+              >
+                <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" referrerPolicy="no-referrer" />
+                Entrar com Google
               </button>
             </form>
           ) : (
@@ -405,19 +659,9 @@ export default function App() {
                 <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
                 <input 
                   type="email" 
-                  placeholder="E-mail" 
+                  placeholder="E-mail *" 
                   value={registerForm.email}
                   onChange={(e) => setRegisterForm({...registerForm, email: e.target.value})}
-                  className="w-full bg-black border border-zinc-800 rounded-xl py-3 pl-12 pr-4 focus:outline-none focus:border-yellow-400 transition-all"
-                />
-              </div>
-              <div className="relative">
-                <AtSign className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-                <input 
-                  type="text" 
-                  placeholder="Login *" 
-                  value={registerForm.login}
-                  onChange={(e) => setRegisterForm({...registerForm, login: e.target.value})}
                   className="w-full bg-black border border-zinc-800 rounded-xl py-3 pl-12 pr-4 focus:outline-none focus:border-yellow-400 transition-all"
                   required
                 />
@@ -433,9 +677,75 @@ export default function App() {
                   required
                 />
               </div>
-              <button type="submit" className="w-full bg-yellow-400 text-black font-black py-4 rounded-xl hover:bg-yellow-300 transition-all uppercase tracking-tighter flex items-center justify-center gap-2">
-                <UserPlus className="w-5 h-5" />
-                Criar Conta
+
+              <div className="relative">
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                <input 
+                  type="password" 
+                  placeholder="Confirmar Senha *" 
+                  value={registerForm.confirmPassword}
+                  onChange={(e) => setRegisterForm({...registerForm, confirmPassword: e.target.value})}
+                  className="w-full bg-black border border-zinc-800 rounded-xl py-3 pl-12 pr-4 focus:outline-none focus:border-yellow-400 transition-all"
+                  required
+                />
+              </div>
+
+              {/* Password Criteria */}
+              <div className="grid grid-cols-2 gap-2 bg-black/40 p-4 rounded-xl border border-zinc-800/50">
+                <div className={`flex items-center gap-2 text-[10px] font-bold transition-colors ${passwordCriteria.length ? 'text-green-400' : 'text-zinc-500'}`}>
+                  <CheckCircle2 className={`w-3 h-3 ${passwordCriteria.length ? 'opacity-100' : 'opacity-20'}`} />
+                  Mín. 8 caracteres
+                </div>
+                <div className={`flex items-center gap-2 text-[10px] font-bold transition-colors ${passwordCriteria.uppercase ? 'text-green-400' : 'text-zinc-500'}`}>
+                  <CheckCircle2 className={`w-3 h-3 ${passwordCriteria.uppercase ? 'opacity-100' : 'opacity-20'}`} />
+                  Letra maiúscula
+                </div>
+                <div className={`flex items-center gap-2 text-[10px] font-bold transition-colors ${passwordCriteria.lowercase ? 'text-green-400' : 'text-zinc-500'}`}>
+                  <CheckCircle2 className={`w-3 h-3 ${passwordCriteria.lowercase ? 'opacity-100' : 'opacity-20'}`} />
+                  Letra minúscula
+                </div>
+                <div className={`flex items-center gap-2 text-[10px] font-bold transition-colors ${passwordCriteria.number ? 'text-green-400' : 'text-zinc-500'}`}>
+                  <CheckCircle2 className={`w-3 h-3 ${passwordCriteria.number ? 'opacity-100' : 'opacity-20'}`} />
+                  Número
+                </div>
+                <div className={`flex items-center gap-2 text-[10px] font-bold transition-colors ${passwordCriteria.special ? 'text-green-400' : 'text-zinc-500'}`}>
+                  <CheckCircle2 className={`w-3 h-3 ${passwordCriteria.special ? 'opacity-100' : 'opacity-20'}`} />
+                  Caractere especial
+                </div>
+                <div className={`flex items-center gap-2 text-[10px] font-bold transition-colors ${passwordCriteria.match ? 'text-green-400' : 'text-zinc-500'}`}>
+                  <CheckCircle2 className={`w-3 h-3 ${passwordCriteria.match ? 'opacity-100' : 'opacity-20'}`} />
+                  Senhas coincidem
+                </div>
+              </div>
+              <button 
+                type="submit" 
+                disabled={isRegistering}
+                className="w-full bg-yellow-400 text-black font-black py-4 rounded-xl hover:bg-yellow-300 transition-all uppercase tracking-tighter flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {isRegistering ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <UserPlus className="w-5 h-5" />
+                )}
+                {isRegistering ? 'Criando Conta...' : 'Criar Conta'}
+              </button>
+
+              <div className="relative py-4">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-zinc-800"></div>
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-zinc-900 px-2 text-zinc-500 font-bold">Ou continue com</span>
+                </div>
+              </div>
+
+              <button 
+                type="button"
+                onClick={handleGoogleSignIn}
+                className="w-full bg-white text-black font-black py-4 rounded-xl hover:bg-zinc-200 transition-all uppercase tracking-tighter flex items-center justify-center gap-2"
+              >
+                <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" referrerPolicy="no-referrer" />
+                Entrar com Google
               </button>
             </form>
           )}
@@ -601,30 +911,32 @@ export default function App() {
               <Trophy className="w-6 h-6 text-yellow-400" />
               Ideias em Destaque
             </h2>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2">
+                <span className="text-[10px] font-black uppercase text-zinc-500">Filtrar:</span>
+                <select 
+                  value={activeCategory}
+                  onChange={(e) => setActiveCategory(e.target.value as Category | 'Todas')}
+                  className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer"
+                >
+                  <option value="Todas" className="bg-zinc-900">Todas as Categorias</option>
+                  {CATEGORIES.map(cat => (
+                    <option key={cat} value={cat} className="bg-zinc-900">{cat}</option>
+                  ))}
+                </select>
+              </div>
+
               <button 
-                onClick={() => setActiveCategory('Todas')}
-                className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all border ${
-                  activeCategory === 'Todas' 
+                onClick={() => setShowOnlyMyIdeas(!showOnlyMyIdeas)}
+                className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border flex items-center gap-2 ${
+                  showOnlyMyIdeas 
                     ? 'bg-yellow-400 border-yellow-400 text-black' 
                     : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-600'
                 }`}
               >
-                Todas
+                <UserIcon className="w-3 h-3" />
+                Minhas Sugestões
               </button>
-              {CATEGORIES.map(cat => (
-                <button 
-                  key={cat}
-                  onClick={() => setActiveCategory(cat)}
-                  className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all border ${
-                    activeCategory === cat 
-                      ? 'bg-yellow-400 border-yellow-400 text-black' 
-                      : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-600'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
             </div>
           </div>
 
@@ -634,7 +946,8 @@ export default function App() {
                 const matchesSearch = idea.title.toLowerCase().includes(searchTerm.toLowerCase()) || 
                                     idea.description.toLowerCase().includes(searchTerm.toLowerCase());
                 const matchesCategory = activeCategory === 'Todas' || idea.category === activeCategory;
-                return matchesSearch && matchesCategory;
+                const matchesUser = !showOnlyMyIdeas || idea.authorUid === currentUser?.uid;
+                return matchesSearch && matchesCategory && matchesUser;
               })
               .map((idea, index) => (
               <motion.div 
@@ -684,9 +997,20 @@ export default function App() {
                   
                   <div className="flex-1">
                     <div className="flex items-start justify-between mb-2">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-zinc-800 px-2 py-1 rounded">
-                        {idea.category}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-zinc-800 px-2 py-1 rounded">
+                          {idea.category}
+                        </span>
+                        {idea.authorUid === currentUser?.uid && (
+                          <button 
+                            onClick={() => startEditing(idea)}
+                            className="text-[10px] font-black uppercase tracking-widest text-yellow-400 hover:text-yellow-300 flex items-center gap-1 transition-colors"
+                          >
+                            <Edit className="w-3 h-3" />
+                            Editar
+                          </button>
+                        )}
+                      </div>
                       <span className="text-xs text-zinc-600 font-medium">{idea.date}</span>
                     </div>
                     <h3 className="text-xl font-bold mb-2 group-hover:text-yellow-400 transition-colors">{idea.title}</h3>
@@ -695,7 +1019,7 @@ export default function App() {
                     <div className="flex items-center gap-6 text-zinc-500">
                       <div className="flex items-center gap-2 text-xs font-bold">
                         <Users className="w-4 h-4" />
-                        {idea.author}
+                        {idea.authorNickname}
                       </div>
                       <button 
                         onClick={() => toggleComments(idea.id)}
@@ -704,7 +1028,7 @@ export default function App() {
                         }`}
                       >
                         <MessageSquare className="w-4 h-4" />
-                        {idea.comments.length} Comentários
+                        {idea.comments?.length || 0} Comentários
                       </button>
                     </div>
 
@@ -720,15 +1044,15 @@ export default function App() {
                           <h4 className="text-sm font-black uppercase tracking-widest text-zinc-500 mb-6">Comentários</h4>
                           
                           <div className="space-y-6 mb-8">
-                            {idea.comments.length > 0 ? (
-                              idea.comments.map(comment => (
+                            {(idea.comments?.length || 0) > 0 ? (
+                              idea.comments?.map(comment => (
                                 <div key={comment.id} className="flex gap-4">
                                   <div className="w-8 h-8 bg-zinc-800 rounded-full flex items-center justify-center text-[10px] font-black text-zinc-400 shrink-0">
-                                    {comment.author.charAt(0).toUpperCase()}
+                                    {comment.author?.charAt(0).toUpperCase() || '?'}
                                   </div>
                                   <div className="flex-1">
                                     <div className="flex items-center justify-between mb-1">
-                                      <span className="text-xs font-black text-white">@{comment.author}</span>
+                                      <span className="text-xs font-black text-white">@{comment.author || 'anonimo'}</span>
                                       <span className="text-[10px] text-zinc-600">{comment.date}</span>
                                     </div>
                                     <p className="text-sm text-zinc-400">{comment.text}</p>
@@ -766,6 +1090,91 @@ export default function App() {
           </div>
         </section>
       </main>
+
+      {/* Edit Modal */}
+      <AnimatePresence>
+        {editingIdea && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setEditingIdea(null)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-2xl bg-zinc-900 border border-zinc-800 rounded-3xl p-8 shadow-2xl"
+            >
+              <div className="flex items-center justify-between mb-8">
+                <h2 className="text-2xl font-black uppercase tracking-tighter">Editar Sugestão</h2>
+                <button 
+                  onClick={() => setEditingIdea(null)}
+                  className="p-2 text-zinc-500 hover:text-white transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <form onSubmit={handleEditIdea} className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">Título da Ideia</label>
+                    <input 
+                      type="text" 
+                      value={editForm.title}
+                      onChange={(e) => setEditForm({...editForm, title: e.target.value})}
+                      className="w-full bg-black border border-zinc-800 rounded-xl p-4 focus:outline-none focus:border-yellow-400 transition-all"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">Categoria</label>
+                    <select 
+                      value={editForm.category}
+                      onChange={(e) => setEditForm({...editForm, category: e.target.value as Category})}
+                      className="w-full bg-black border border-zinc-800 rounded-xl p-4 focus:outline-none focus:border-yellow-400 transition-all appearance-none cursor-pointer"
+                      required
+                    >
+                      {CATEGORIES.map(cat => (
+                        <option key={cat} value={cat}>{cat}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-500 uppercase tracking-widest mb-2">Descrição</label>
+                  <textarea 
+                    value={editForm.description}
+                    onChange={(e) => setEditForm({...editForm, description: e.target.value})}
+                    className="w-full bg-black border border-zinc-800 rounded-xl p-4 min-h-[150px] focus:outline-none focus:border-yellow-400 transition-all"
+                    required
+                  />
+                </div>
+                <div className="flex gap-4">
+                  <button 
+                    type="button"
+                    onClick={() => setEditingIdea(null)}
+                    className="flex-1 bg-zinc-800 text-white font-black py-4 rounded-xl hover:bg-zinc-700 transition-all uppercase tracking-tighter"
+                  >
+                    Cancelar
+                  </button>
+                  <button 
+                    type="submit"
+                    disabled={isEditing}
+                    className="flex-2 bg-yellow-400 text-black font-black py-4 rounded-xl hover:bg-yellow-300 transition-all disabled:opacity-50 flex items-center justify-center gap-2 uppercase tracking-tighter"
+                  >
+                    {isEditing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Edit className="w-5 h-5" />}
+                    Salvar Alterações
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Footer */}
       <footer className="border-t border-zinc-800 py-12 mt-20">
