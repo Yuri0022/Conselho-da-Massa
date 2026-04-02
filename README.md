@@ -6,22 +6,21 @@ O **Conselho da Massa** é uma plataforma digital inovadora projetada para dar v
 
 ## 🚀 Funcionalidades
 
-- **Autenticação de Torcedores:** Sistema de login e registro para garantir que as sugestões venham de membros reais da Massa.
-- **Sugestão de Ideias:** Envio de propostas detalhadas com categorização automática.
-- **Votação Democrática:** Sistema de "Gostei" e "Não Gostei" com trava de voto único por usuário por ideia.
-- **Categorização Inteligente:** Filtre e organize sugestões por áreas como:
-  - ⚽ Futebol
-  - 📢 Marketing
-  - 🏟️ Infraestrutura
-  - 💳 Sócio-Torcedor
-  - ➕ Outros
-- **Debate Ativo:** Seção de comentários expansível para cada ideia, permitindo o aprofundamento das discussões.
+- **Autenticação Segura:** Login e registro via E-mail/Senha ou **Google Sign-In**, com perfis persistentes no Firebase.
+- **Sugestão de Ideias:** Envio de propostas detalhadas com categorização e validação de segurança.
+- **Edição de Sugestões:** Autores podem editar suas próprias ideias (título, descrição e categoria) a qualquer momento.
+- **Votação Democrática:** Sistema de "Gostei" e "Não Gostei" com transações atômicas e trava de voto único por usuário.
+- **Filtros Avançados:** 
+  - Menu suspenso (picklist) para categorias.
+  - Filtro **"Minhas Sugestões"** para acompanhar suas próprias propostas.
+- **Debate Ativo:** Seção de comentários em tempo real para cada ideia.
 - **Busca em Tempo Real:** Localize sugestões rapidamente por palavras-chave.
 - **Interface Premium:** Design moderno em preto, branco e dourado, com animações fluidas utilizando Framer Motion.
 
 ## 🛠️ Tecnologias Utilizadas
 
-- **React 18** com **Vite** para um desenvolvimento ágil e performance superior.
+- **React 18** com **Vite** para performance superior.
+- **Firebase (Auth & Firestore):** Backend as a Service para autenticação e banco de dados em tempo real.
 - **TypeScript** para garantir a robustez e segurança do código.
 - **Tailwind CSS** para uma estilização moderna e responsiva.
 - **Framer Motion** para micro-interações e animações de interface.
@@ -33,20 +32,25 @@ O **Conselho da Massa** é uma plataforma digital inovadora projetada para dar v
     ```bash
     git clone <url-do-repositorio>
     ```
-2.  **Instale as dependências:**
+2.  **Configuração do Firebase:**
+    Certifique-se de que o arquivo `firebase-applet-config.json` contenha as credenciais válidas do seu projeto Firebase.
+3.  **Instale as dependências:**
     ```bash
     npm install
     ```
-3.  **Inicie o servidor de desenvolvimento:**
+4.  **Inicie o servidor de desenvolvimento:**
     ```bash
     npm run dev
     ```
-4.  **Acesse no navegador:**
+5.  **Acesse no navegador:**
     O projeto estará disponível em `http://localhost:3000`.
 
 ## 🛡️ Segurança e Privacidade
 
-As informações de login e as interações são armazenadas localmente (`localStorage`) para fins de demonstração nesta versão, garantindo uma experiência persistente no navegador do usuário sem a necessidade de um backend complexo inicialmente.
+O sistema utiliza **Firebase Security Rules** para garantir que:
+- Apenas o autor possa editar sua própria sugestão.
+- Votos sejam únicos e vinculados ao UID do usuário.
+- Dados sensíveis de perfil sejam protegidos contra acesso não autorizado.
 
 ---
 
